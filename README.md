@@ -1,6 +1,6 @@
 # TopicSpark ✨ — YouTube Topic Extractor (Chrome Extension)
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-green)
 ![Powered by Gemini](https://img.shields.io/badge/powered%20by-Gemini%20video-blue)
@@ -43,7 +43,9 @@ YouTube URL ──▶ Gemini video input (visuals + audio)
 
 1. **Paste a YouTube URL** — `watch`, `youtu.be`, `shorts`, `embed` and `live`
    links all work (they are normalized to a watch URL for Gemini).
-2. **Add your Gemini API key** — once. It stays on your device.
+2. **Add your Gemini API key** — the model list loads **live from Google**;
+   pick any model from the dropdown (retired models never appear). Press
+   ↻ Refresh anytime to reload the list.
 3. **Click "Extract 4 Topics"** — Gemini watches the video and returns 4 topics
    in strict JSON. If Gemini cannot access the video (private, age-restricted,
    unavailable), you get a clear error instead of a made-up answer.
@@ -107,7 +109,8 @@ topicspark/
 | "Please paste a valid YouTube URL" | Use a full link: `youtube.com/watch?v=...`, `youtu.be/...`, or a Shorts link. |
 | "Gemini error 400" | Gemini cannot access that video (private, age-restricted, unavailable) — try a public video. |
 | "Gemini error 400 API key not valid" | Your key is wrong or expired — create a new one in Google AI Studio. |
-| "Gemini error 404" | Model name doesn't exist — check the model field (`gemini-2.5-flash` is the default). |
+| "Gemini error 404" / model no longer available | That model was retired by Google — press ↻ Refresh and pick a current model from the live list. |
+| Model list empty | Add your Gemini key first, then press ↻ Refresh. |
 | Topics in the wrong language | Should not happen — the prompt enforces English only. If it ever does, click Extract again. |
 | Empty Gemini response | Try again once; very long videos are sampled by the model and can occasionally time out. |
 

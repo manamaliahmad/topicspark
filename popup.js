@@ -1,5 +1,8 @@
-/* TopicSpark v1.1.0 — popup logic: Gemini watches the FULL YouTube video
+/* TopicSpark v1.2.0 — popup logic: Gemini watches the FULL YouTube video
    (visuals + audio) via fileData and returns 4 next-video topics.
+   MODEL PICKER: the model dropdown is filled LIVE from Google's models.list
+   endpoint using the user's own key, filtered to generateContent-capable
+   models — so retired models (e.g. ones Google discontinued) never appear.
    Key lives in chrome.storage.local (this device only) and is sent ONLY to
    the Google Gemini API, via the x-goog-api-key header. Output is English only. */
 (function () {
@@ -7,8 +10,9 @@
   var DEF = {
     apiKey: '',
     apiBase: 'https://generativelanguage.googleapis.com/v1beta/models',
-    model: 'gemini-2.5-flash'
+    model: ''
   };
+  var CUSTOM = '__custom__';
 
   var statusEl = $('status'), resultsEl = $('results'), actionsEl = $('actions');
   var lastTopics = [];
@@ -17,21 +21,104 @@
     statusEl.textContent = msg;
     statusEl.className = kind || '';
   }
+  function apiBase() {
+    return $('apiBase').value.trim() || DEF.apiBase;
+  }
+  function currentModel() {
+    var sel = $('modelSelect');
+    if (sel.value === CUSTOM) return $('customModel').value.trim();
+    return sel.value;
+  }
   function saveSettings() {
     chrome.storage.local.set({
       apiKey: $('apiKey').value.trim(),
-      apiBase: $('apiBase').value.trim() || DEF.apiBase,
-      model: $('model').value.trim() || DEF.model
+      apiBase: apiBase(),
+      model: currentModel()
     });
   }
+  function addOption(sel, value, text) {
+    var o = document.createElement('option');
+    o.value = value; o.textContent = text; sel.appendChild(o);
+  }
+  function onModelChange() {
+    var isCustom = $('modelSelect').value === CUSTOM;
+    $('customModel').style.display = isCustom ? 'block' : 'none';
+    if (!isCustom) saveSettings();
+  }
+
+  /* Fill the dropdown from Google's live model list. Returns true on success. */
+  async function loadModels(showStatus) {
+    var key = $('apiKey').value.trim();
+    var sel = $('modelSelect');
+    if (!key) {
+      sel.innerHTML = '';
+      addOption(sel, '', 'Add your API key first, then press Refresh');
+      sel.disabled = true;
+      $('customModel').style.display = 'none';
+      return false;
+    }
+    if (showStatus) setStatus('Loading available models from Google…');
+    try {
+      var res = await fetch(apiBase().replace(/\/$/, '') + '?pageSize=100', {
+        headers: { 'x-goog-api-key': key }
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      var ids = [];
+      (data.models || []).forEach(function (m) {
+        var methods = m.supportedGenerationMethods || [];
+        if (methods.indexOf('generateContent') === -1) return;
+        var id = (m.name || '').replace(/^models\//, '');
+        if (id && ids.indexOf(id) === -1) ids.push(id);
+      });
+      if (!ids.length) throw new Error('no usable models returned');
+      ids.sort(function (a, b) {
+        var fa = a.indexOf('flash') !== -1 ? 0 : 1;
+        var fb = b.indexOf('flash') !== -1 ? 0 : 1;
+        if (fa !== fb) return fa - fb;
+        return a < b ? -1 : (a > b ? 1 : 0);
+      });
+      var saved = sel.dataset.saved || '';
+      sel.innerHTML = '';
+      ids.forEach(function (id) { addOption(sel, id, id); });
+      addOption(sel, CUSTOM, 'Other (type manually)…');
+      sel.disabled = false;
+      if (saved && ids.indexOf(saved) !== -1) sel.value = saved;
+      else { sel.value = ids[0]; saveSettings(); }
+      onModelChange();
+      if (showStatus) setStatus('Models loaded — retired models never appear here.', 'ok');
+      return true;
+    } catch (err) {
+      if (showStatus) setStatus('Could not load models (' + err.message + '). Check your key, then press Refresh.', 'err');
+      return false;
+    }
+  }
+
+  /* Init: restore settings, seed the dropdown with the saved model, then
+     silently refresh the live list (so a retired saved model is replaced). */
   chrome.storage.local.get(DEF, function (items) {
     $('apiKey').value = items.apiKey || '';
     $('apiBase').value = items.apiBase || DEF.apiBase;
-    $('model').value = items.model || DEF.model;
+    var sel = $('modelSelect');
+    if (items.model) {
+      sel.dataset.saved = items.model;
+      sel.innerHTML = '';
+      addOption(sel, items.model, items.model);
+      addOption(sel, CUSTOM, 'Other (type manually)…');
+      sel.value = items.model;
+    } else {
+      sel.innerHTML = '';
+      addOption(sel, '', 'Add your API key first, then press Refresh');
+      sel.disabled = true;
+    }
+    if (items.apiKey) loadModels(false);
   });
-  ['apiKey', 'apiBase', 'model'].forEach(function (id) {
-    $(id).addEventListener('change', saveSettings);
-  });
+
+  $('apiKey').addEventListener('change', function () { saveSettings(); loadModels(false); });
+  $('apiBase').addEventListener('change', saveSettings);
+  $('modelSelect').addEventListener('change', onModelChange);
+  $('customModel').addEventListener('change', saveSettings);
+  $('refreshBtn').addEventListener('click', function () { saveSettings(); loadModels(true); });
 
   function extractVideoId(url) {
     try {
@@ -58,8 +145,8 @@
     + 'Hindi, Roman Urdu, or any other language, your entire output must be in English. '
     + 'Never output Roman Urdu, never mix languages. Return JSON only.';
 
-  async function askGemini(apiBase, key, model, watchUrl) {
-    var url = apiBase.replace(/\/$/, '') + '/' + model + ':generateContent';
+  async function askGemini(base, key, model, watchUrl) {
+    var url = base.replace(/\/$/, '') + '/' + model + ':generateContent';
     var res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
@@ -95,7 +182,9 @@
         var e = await res.json();
         if (e.error && e.error.message) msg += ': ' + e.error.message;
       } catch (err) { /* keep status */ }
-      if (res.status === 400) {
+      if (res.status === 404) {
+        msg += ' (This model is retired. Press Refresh to load the current model list and pick a live model.)';
+      } else if (res.status === 400) {
         msg += ' (Gemini may not be able to access this video — it could be private, age-restricted, or unavailable. Try a public video.)';
       }
       throw new Error(msg);
@@ -173,8 +262,8 @@
   $('extractBtn').addEventListener('click', async function () {
     var btn = $('extractBtn');
     var key = $('apiKey').value.trim();
-    var apiBase = $('apiBase').value.trim() || DEF.apiBase;
-    var model = $('model').value.trim() || DEF.model;
+    var base = apiBase();
+    var model = currentModel();
     var url = $('ytUrl').value.trim();
     resultsEl.innerHTML = '';
     actionsEl.style.display = 'none';
@@ -183,13 +272,14 @@
     var videoId = extractVideoId(url);
     if (!videoId) { setStatus('Please paste a valid YouTube URL.', 'err'); return; }
     if (!key) { setStatus('Please add your Gemini API key first. It stays on this device only.', 'err'); return; }
+    if (!model) { setStatus('Choose a model first — press Refresh to load the live list from Google.', 'err'); return; }
     saveSettings();
     btn.disabled = true;
 
     try {
-      setStatus('Sending the full video to Gemini… (watching visuals + audio, English output)');
+      setStatus('Sending the full video to Gemini (' + model + ')… (watching visuals + audio, English output)');
       var watchUrl = 'https://www.youtube.com/watch?v=' + videoId;
-      var raw = await askGemini(apiBase, key, model, watchUrl);
+      var raw = await askGemini(base, key, model, watchUrl);
       var topics = parseTopics(raw);
       if (topics && topics.length) {
         renderTopics(topics.slice(0, 4));
